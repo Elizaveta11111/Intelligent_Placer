@@ -13,29 +13,35 @@ def binary(img):
 
 
 def get_components(mask):
-    labels = sk_measure_label(mask) # разбиение маски на компоненты связности
+    labels = sk_measure_label(mask)  # разбиение маски на компоненты связности
     props = regionprops(labels)  # нахождение свойств каждой области
-    areas = [prop.area for prop in props] # нас интересуют площади компонент связности
-    paper = np.array(areas).argmax() # площадь листа - максимальная на изображении
-    areas[paper] = 0 
-    poly = np.array(areas).argmax() # находим вторую по величине компоненту - многоугольник
-    return labels == (paper + 1), labels == (poly + 1)
+    areas = [prop.area for prop in props]  # нас интересуют площади компонент связности
+    boxes = [prop.bbox for prop in props]
+    # находим две наибольшие компоненты связности - это лист и многоугольник
+    first = np.array(areas).argmax()
+    areas[first] = 0
+    second = np.array(areas).argmax()
+    # при этом многоугольник не может лежать за пределами листа
+    if boxes[first][0] < boxes[second][0]:
+        return labels == (first + 1), labels == (second + 1)
+    else:
+        return labels == (second + 1), labels == (first + 1)
 
 
 def paper_edges(paper):
-    contours, hierarchy = cv2.findContours(paper, 1, 2) # поиск контуров на ихображении
-    cnt = contours[0] # на изображении только один предмет - лист
-    rect = cv2.minAreaRect(cnt) # поиск наименьшего по площади многоугольника, ограничивающего лист
-    box = cv2.boxPoints(rect) 
+    contours, hierarchy = cv2.findContours(paper, 1, 2)  # поиск контуров на ихображении
+    cnt = contours[0]  # на изображении только один предмет - лист
+    rect = cv2.minAreaRect(cnt)  # поиск наименьшего по площади многоугольника, ограничивающего лист
+    box = cv2.boxPoints(rect)
     box = np.int0(box)
     return box
 
 
 def poly_edges(poly):
-    contours, hierarchy = cv2.findContours(poly, 1, 2) # поиск контуров на изображении
-    cnt = contours[0] # на изображении только один предмет - многоугольник
+    contours, hierarchy = cv2.findContours(poly, 1, 2)  # поиск контуров на изображении
+    cnt = contours[0]  # на изображении только один предмет - многоугольник
     perimeter = cv2.arcLength(cnt, True)
-    shape = cv2.approxPolyDP(cnt, 0.02 * perimeter, True) # переходим от контура к многоугольнику
+    shape = cv2.approxPolyDP(cnt, 0.02 * perimeter, True)  # переходим от контура к многоугольнику
     return shape[:, 0]
 
 
@@ -70,30 +76,30 @@ def find_corner(paper):
 
 
 def coord_transformation(poly, paper):
-    srcTri = np.array(find_corner(paper)).astype(np.float32) # находим левый нижний угол листа на изображении
-    dstTri = np.array([[0, 297], [0, 0], [210, 0]]).astype(np.float32) # три точки которые мы хотим ему сопоставить 
-    warp_mat = cv2.getAffineTransform(srcTri, dstTri) # находим нужное отображение
+    srcTri = np.array(find_corner(paper)).astype(np.float32)  # находим левый нижний угол листа на изображении
+    dstTri = np.array([[0, 297], [0, 0], [210, 0]]).astype(np.float32)  # три точки которые мы хотим ему сопоставить
+    warp_mat = cv2.getAffineTransform(srcTri, dstTri)  # находим нужное отображение
     new_poly = []
     for p in poly:
-        new_poly.append(np.dot(warp_mat, np.append(p, 1))) # применяем его к многоугольнику
-    return new_poly
+        new_poly.append(np.dot(warp_mat, np.append(p, 1)))  # применяем его к многоугольнику
+    return np.array(new_poly), warp_mat
 
 
 def detect_polygon(path_to_image):
     img = cv2.imread(path_to_image, cv2.IMREAD_GRAYSCALE)
-    
-    mask = binary(img) # бинаризуем изображение
-    paper, poly = get_components(mask) # находим две самые большие компоненты связности - это лист и многоугольник
-    paper += poly 
-    paper_mask = binary_closing(paper, selem=np.ones((10, 10))) # избавляемся от шума и линии маркера
-    
-    black = np.full(img.shape, 255, dtype=np.uint8) 
-    paper = black * paper_mask
-    poly = black * poly # преобразуем маску в изображение чтобы можно было работать с cv2
-    
-    paper = paper_edges(paper) # находим границы листа
-    poly = poly_edges(poly) # находим границы многоугольника
-    
-    edges = coord_transformation(poly, paper) # определяем координаты многоугольника относительно листа
-    
-    return edges
+
+    mask = binary(img)  # бинаризуем изображение
+    paper, poly = get_components(mask)  # находим две самые большие компоненты связности - это лист и многоугольник
+    paper += poly
+    paper_mask = binary_closing(paper, selem=np.ones((10, 10)))  # избавляемся от шума и линии маркера
+
+    empty_img = np.full(img.shape, 255, dtype=np.uint8)
+    paper = empty_img * paper_mask
+    poly = empty_img * poly  # преобразуем маску в изображение чтобы можно было работать с cv2
+
+    paper = paper_edges(paper)  # находим границы листа
+    poly = poly_edges(poly)  # находим границы многоугольника
+
+    edges, matrix = coord_transformation(poly, paper)  # определяем координаты многоугольника относительно листа
+
+    return paper, matrix, edges
