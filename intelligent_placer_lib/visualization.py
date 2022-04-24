@@ -1,16 +1,20 @@
-from intelligent_placer_lib.fit import fit_in_corner, fit
+from intelligent_placer_lib.fit import fit_in_corner
 from intelligent_placer_lib.fit import items as items_list
-from intelligent_placer_lib.detect_item import items, use_sift
-from intelligent_placer_lib.detect_polygon import binary, get_components, binary_closing, paper_edges, poly_edges, coord_transformation
+from intelligent_placer_lib.place_item import place_item
+from intelligent_placer_lib.decide import decide
+from intelligent_placer_lib.detect_item import find_box, get_largest_components, get_corners, get_paper_mask, sort
+from intelligent_placer_lib.detect_polygon import binary, get_components, paper_edges, poly_edges, coord_transformation
+from intelligent_placer_lib.utility import apply_transformation
+from intelligent_placer_lib.update_polygon import update_polygon
+from skimage.morphology import binary_closing, binary_opening
 import cv2 as cv
 import matplotlib.pyplot as plt
 import matplotlib.patches
 import numpy as np
 from matplotlib import cm
 
-
 def detect_polygon_and_show_steps(path_to_image):
-    fig, ax = plt.subplots(1, 5, figsize=(12, 12))
+    fig, ax = plt.subplots(1, 5, figsize=(15, 15))
     [axi.set_axis_off() for axi in ax.ravel()]
     
     img = cv.imread(path_to_image, cv.IMREAD_GRAYSCALE)
@@ -30,7 +34,7 @@ def detect_polygon_and_show_steps(path_to_image):
     black = np.full(img.shape, 255, dtype=np.uint8)
     paper = paper_edges(black * paper_mask)
     poly = poly_edges(black * poly)
-    edges = coord_transformation(poly, paper)
+    edges, _ = coord_transformation(poly, paper)
     
     paper = matplotlib.patches.Polygon(paper, fill=False, color='r')
     poly = matplotlib.patches.Polygon(poly, fill=False, color='g')
@@ -67,7 +71,7 @@ def detect_polygon(path_to_image):
     paper = paper_edges(paper) 
     poly = poly_edges(poly)
     
-    edges = coord_transformation(poly, paper) 
+    edges, _ = coord_transformation(poly, paper) 
     
     n = len(edges)
     fig, ax = plt.subplots(1, 2)
@@ -84,62 +88,172 @@ def detect_polygon(path_to_image):
     return edges
 
 
-def detect_item(path_to_image):
+def get_items_masks(path_to_image, paper_points):
     img = cv.imread(path_to_image)
-    axes = plt.gca()
-    axes.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
-    items_found = []
-    for item_name in items:
-        y1, y2, x1, x2 = items[item_name]
-        item_img = cv.imread('objects/' + item_name + '.jpg')
-        item_img = item_img[y1:y2, x1:x2]
-        dst = use_sift(item_img, img)
-        if dst is not None:
-            rect = matplotlib.patches.Polygon(dst, fill=False)
-            axes.add_patch(rect)
-            plt.text(dst[0][0], dst[0][1], item_name, horizontalalignment="center")
-            items_found.append(item_name)
+    background = cv.imread('objects/background.jpg')
+    paper = get_paper_mask(paper_points, img.shape)
+
+    print('Исходное изображение')
+    plt.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
+    plt.axis('off')
     plt.show()
-    
 
-def drawPolygon(title, poly, item):
-    plt.figure(figsize=(5, 5))
-    axes = plt.gca()
-    axes.set_aspect("equal")
-    axes.set_xlim([-50, 210])
-    axes.set_ylim([-50, 297])
-    axes.set_title(title)
-    axes.set_axis_off()
-    polygon = matplotlib.patches.Polygon(poly, fill=False, closed=True, linewidth=2, color='r')
-    axes.add_patch(polygon)
-    polygon = matplotlib.patches.Polygon(item, fill=False, closed=True, linewidth=2, color='g')
-    axes.add_patch(polygon)
+    items_on_img = img - background
+    print('Вычли фотографию фона')
+    plt.imshow(cv.cvtColor(items_on_img, cv.COLOR_BGR2RGB))
+    plt.axis('off')
+    plt.show()
 
+    items_on_img = items_on_img - (items_on_img > 200) * items_on_img
+    print('Убрали пиксели с высокой интенсивностью')
+    plt.imshow(cv.cvtColor(items_on_img, cv.COLOR_BGR2RGB))
+    plt.axis('off')
+    plt.show()
+
+    items_mask = (items_on_img > 100)
+    items_mask = (items_mask[..., 0] + items_mask[..., 1] + items_mask[..., 2]) * ~paper
+    print('Получили маску для каждого rgb слоя, бинаризовав по порогу 100. Сложили все слои, таким образом получив маску предметов на изображении. Далее с маски убран лист, его координаты известны из распознавания многоугольника.')
+    plt.imshow(items_mask, cmap='gray')
+    plt.axis('off')
+    plt.show()
+    items_mask = binary_closing(items_mask, selem=np.ones((5, 5)))
+    items_mask = binary_opening(items_mask, selem=np.ones((5, 5)))
+
+    items_masks = get_largest_components(items_mask)
+    colored_items = np.zeros(img.shape, np.uint8)
+    for item_mask in items_masks:
+        colored_mask = np.full(img.shape, list(np.random.choice(range(256), size=3)), dtype=np.uint8)
+        colored_mask[:, :, 0] *= item_mask
+        colored_mask[:, :, 1] *= item_mask
+        colored_mask[:, :, 2] *= item_mask
+        colored_items += colored_mask
+    print('С помощью анализа компонент связности нашли области с достаточно большой площадью, получив маску для каждого предмета по отдельности.')
+    plt.imshow(cv.cvtColor(colored_items, cv.COLOR_BGR2RGB))
+    plt.axis('off')
+    plt.show()
+
+
+def detect_item(path_to_image, paper_points, transformation_matrix, axes):
+    img = cv.imread(path_to_image)
+    background = cv.imread('objects/background.jpg')
+    paper = get_paper_mask(paper_points, img.shape)
+
+    items_on_img = img - background
+    items_on_img = items_on_img - (items_on_img > 200) * items_on_img
+    items_mask = (items_on_img > 100)
+    items_mask = (items_mask[..., 0] + items_mask[..., 1] + items_mask[..., 2]) * ~paper
+    items_mask = binary_closing(items_mask, selem=np.ones((5, 5)))
+    items_mask = binary_opening(items_mask, selem=np.ones((5, 5)))
+
+    items_masks = get_largest_components(items_mask)
+    items_found = []
     
-def drawPolygons(title, item, poly, new_item):
-    plt.figure(figsize=(5, 5))
-    axes = plt.gca()
-    axes.set_aspect("equal")
-    axes.set_xlim([-50, 210])
-    axes.set_ylim([-50, 297])
-    axes.set_title(title)
-    axes.set_axis_off()
-    polygon = matplotlib.patches.Polygon(poly, fill=False, closed=True, linewidth=2, color='b')
-    axes.add_patch(polygon)
-    polygon = matplotlib.patches.Polygon(new_item, fill=False, closed=True, linewidth=2, color='r')
-    axes.add_patch(polygon)
-    polygon = matplotlib.patches.Polygon(item, fill=False, closed=True, linewidth=2)
-    axes.add_patch(polygon)
+    for item_mask in items_masks:
+        item_box = find_box(item_mask)
+        corn2, corn1 = get_corners(item_box)
+        x1 = corn1[0]
+        x2 = corn2[0]
+        y1 = corn1[1]
+        y2 = corn2[1]
+        item = decide(item_box, transformation_matrix, item_mask[y1:y2, x1:x2], img[y1:y2, x1:x2])
+        if item is not None:
+            if  item not in items_found:
+                items_found.append(item)
+            box = matplotlib.patches.Polygon(item_box, fill=False, closed=True, linewidth=2, color='b')
+            axes.add_patch(box)
+            axes.text(x1, y1, item, color='b')
+            
+
+    axes.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
     
+    return sort(items_found)
     
 def variants(poly, name):
     for item in items_list[name]:
+        if len(item) == 0:
+            break
         for i in range(len(poly)):
-            inside, new_item, new_poly = fit_in_corner(poly, item, i)
-            drawPolygons(inside, item, new_poly, new_item)
-    plt.show()
-    
+            inside, new_item, new_poly, _, _, _ = fit_in_corner(poly, item, i)
+            plt.figure(figsize=(5, 5))
+            axes = plt.gca()
+            axes.set_aspect("equal")
+            axes.set_xlim([-50, 210])
+            axes.set_ylim([-50, 297])
+            axes.set_title(inside)
+            axes.set_axis_off()
+            polygon = matplotlib.patches.Polygon(item, fill=False, closed=True, linewidth=2)
+            axes.add_patch(polygon)
+            polygon = matplotlib.patches.Polygon(new_poly, fill=False, closed=True, linewidth=2, color='b')
+            axes.add_patch(polygon)
+            polygon = matplotlib.patches.Polygon(new_item, fill=False, closed=True, linewidth=2, color='r')
+            axes.add_patch(polygon)
+            
 
-def result(poly, name):
-    inside, item, poly = fit(poly, name)
-    drawPolygon(inside, item, poly)
+def next_poly_variants(poly, name):
+    for item in items_list[name]:
+        if len(item) == 0:
+            break
+        for i in range(len(poly)):
+            inside, new_item, poly, points_on_sides_list, points_assignment, _ = fit_in_corner(poly, item, i)
+            if inside:
+                new_poly, _ = update_polygon(poly, new_item, points_on_sides_list, points_assignment, name)
+                plt.figure(figsize=(5, 5))
+                axes = plt.gca()
+                axes.set_axis_off()
+                axes.set_aspect("equal")
+                axes.set_xlim([-50, 210])
+                axes.set_ylim([-50, 297])
+                polygon = matplotlib.patches.Polygon(poly, fill=True, closed=True, linewidth=2, color='b')
+                axes.add_patch(polygon)
+                polygon = matplotlib.patches.Polygon(new_poly, fill=False, closed=True, linewidth=2)
+                axes.add_patch(polygon)
+                plt.show()     
+          
+         
+def result(polygon, name):
+    new_polygon, item, matrix = place_item(polygon, name)
+    if item is not None:
+        plt.figure(figsize=(5, 5))
+        axes = plt.gca()
+        axes.set_aspect("equal")
+        axes.set_xlim([-50, 210])
+        axes.set_ylim([-50, 297])
+        polygon = matplotlib.patches.Polygon(apply_transformation(polygon, matrix), fill=True, closed=True, linewidth=2, color='b')
+        axes.add_patch(polygon)
+        polygon = matplotlib.patches.Polygon(new_polygon, fill=False, closed=True, linewidth=2)
+        axes.add_patch(polygon)
+        plt.show()
+        
+        
+def move_all(first_poly, poly, items, matrix):
+    first_poly = apply_transformation(first_poly, matrix)
+    poly = apply_transformation(poly, matrix)
+    items = [apply_transformation(item, matrix) for item in items]
+    return first_poly, poly, items
+
+
+def place_items(polygon, items_names, axes):
+    first_poly = polygon
+    items = []
+    ans = True
+    for i in range(len(items_names)):
+        name = items_names[i]
+        polygon, item, matrix = place_item(polygon, name)
+        if polygon is None:
+            ans = False
+            break
+        first_poly, _, items = move_all(first_poly, polygon, items, matrix)
+        items.append(item)
+    if len(items):
+        axes.set_aspect("equal")
+        axes.set_title(ans)
+        patch = matplotlib.patches.Polygon(first_poly, fill=True, closed=True, linewidth=2, color='b')
+        axes.add_patch(patch)
+        for i in range(len(items)):
+            item = items[i]
+            patch = matplotlib.patches.Polygon(item, fill=False, closed=True, linewidth=2)
+            plt.text(item[0][0], item[0][1], items_names[i])
+            axes.add_patch(patch)
+            axes.set_xlim([item[0][0] - 150, item[0][0] + 150])
+            axes.set_ylim([item[0][1] - 150, item[0][1] + 200])
+    return ans

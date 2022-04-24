@@ -1,16 +1,7 @@
-from math import sqrt
 import numpy as np
 from cv2 import getAffineTransform
-
-
-def vec(a, b):  # возвращает вектор от точки a до b
-    return [b[0] - a[0], b[1] - a[1]]
-
-
-def norm(v):  # норма вектора
-    x = v[0]
-    y = v[1]
-    return sqrt(x * x + y * y)
+from skimage.measure import points_in_poly
+from intelligent_placer_lib.utility import norm, vec
 
 
 def side_len(a):  # длинна стороны
@@ -29,7 +20,17 @@ def cos_sign(a, b):  # возвращает знак косинуса между
         return -1
 
 
-def find_axes(p1, p2, p3):  # на заданной стороне определяет направление ортов
+def check_if_convex(poly, i):  # проверяет является ли угол выпуклым или нет
+    p1 = poly[i - 1]
+    p2 = poly[(i + 1) % len(poly)]
+    middle = ((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2)  # определяем середину отрезка, соединяющего концы угла
+    return points_in_poly([middle], poly)  # если она лежит внутри многоугольника - угол выпуклый
+
+
+def find_axes(poly, k):  # на заданной стороне определяет направление ортов
+    p3 = poly[k - 1]
+    p2 = poly[k]
+    p1 = poly[(k + 1) % len(poly)]
     i = normalize(vec(p1, p2))  # выбираем одну из сторон как направление оси x
     ax = i[0]
     ay = i[1]
@@ -41,14 +42,12 @@ def find_axes(p1, p2, p3):  # на заданной стороне опреде�
         by = -ax / ay
     j = normalize([bx, by])  # находим перепендикулярный ей вектор
     direction = cos_sign(j, vec(p1, p3))  # ось y должна составлять угол меньше прямого со второй стороной
+    if not check_if_convex(poly, k):  # и больше прямого для невыпуклого многоугольника
+        direction = -direction
     return [[p1[0] + i[0], p1[1] + i[1]], p1, [p1[0] + j[0] * direction, p1[1] + j[1] * direction]]
 
 
-def coord_transformation(poly, i):  # переносит многоугольник в начало координат
+def coord_transformation(poly, i):  # возвращает отображение, переносящее многоугольник в начало координат
     dst_tri = np.array([[1, 0], [0, 0], [0, 1]]).astype(np.float32)
-    src_tri = np.array([find_axes(poly[i - 1], poly[i], poly[(i + 1) % len(poly)])]).astype(np.float32)
-    warp_mat = getAffineTransform(src_tri, dst_tri)
-    new_poly = []
-    for p in poly:
-        new_poly.append(np.dot(warp_mat, np.append(p, 1)))
-    return new_poly
+    src_tri = np.array([find_axes(poly, i)]).astype(np.float32)
+    return getAffineTransform(src_tri, dst_tri)

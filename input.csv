@@ -1,26 +1,37 @@
-1, True
-2, True
-3, True
-4, True
-5, True
-6, True
-7, True
-8, False
-9, False
-10, False
-11, False
-12, False
-13, False
-14, True
-15, True
-16, True
-17, True
-18, True
-19, False
-20, False
-21, False
-22, True
-23, False
-24, True
-25, False
-26, True
+1, True, book
+2, True, lighter
+3, True, tool, lighter, mascara
+4, True, mascara
+5, True, stapler, tape, lighter
+6, True, tool
+7, True, stapler, tape
+8, False, book
+9, False, tool
+10, False, lighter
+11, True, stapler, scissors
+12, False, heart
+13, False, yellow_scissors
+14, True, heart, toy, scissors, tool
+15, True, scissors
+16, True, yellow_scissors
+17, True, lighter, tape
+18, True, tool, toy
+19, False, lighter, scissors
+20, False, scissors, mascara
+21, False, mascara, tool
+22, True, lighter, mascara
+23, False, tool, stapler
+24, True, lighter, tool, toy
+25, True, stapler, scissors, heart
+26, False, stapler, scissors, tape
+27, True, lighter, scissors, stapler, tool, mascara
+28, False, book, tape, tool
+29, False, tape, stapler
+30, True, lighter, heart, mascara
+31, True, tape, heart
+32, True, lighter, heart
+33, True, heart, scissors
+34, True, scissors, toy
+35, True, tape, lighter, heart
+36, True, heart, toy, scissors
+37, True, heart, toy, scissors
